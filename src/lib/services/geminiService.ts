@@ -134,6 +134,15 @@ export const geminiService = {
                 } as GeminiAnalysisResult,
               }
             }
+          } else {
+            // Surface the actual error from the dev middleware (503 high demand, 401 bad key, etc.)
+            try {
+              const errBody = await devRes.json()
+              const errMsg = errBody?.error || `AI service returned HTTP ${devRes.status}`
+              return { data: null, error: errMsg }
+            } catch {
+              return { data: null, error: `AI service returned HTTP ${devRes.status}. Check the terminal for details.` }
+            }
           }
         } catch (devErr) {
           console.warn('Local dev AI analysis endpoint unavailable, falling back to Supabase Edge Function:', devErr)

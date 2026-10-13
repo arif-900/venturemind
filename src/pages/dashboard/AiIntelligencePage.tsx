@@ -32,6 +32,7 @@ import {
   ProvenanceMetadata,
   DiscoveryMetrics,
   LocationDisambiguationCandidate,
+  buildGoogleMapsUrl,
 } from '@/lib/services/realtimeIntelligenceService'
 import { businessService } from '@/lib/services/businessService'
 import { BusinessRequestRecord, businessCategories, BUSINESS_OBJECTIVES, CUSTOM_SECTOR_SENTINEL } from '@/lib/validations/business'
@@ -43,6 +44,10 @@ import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { InteractiveAreaMap } from '@/components/map/InteractiveAreaMap'
+import { GoogleMapsLink } from '@/components/ui/GoogleMapsLink'
+import { DecisionDashboard } from '@/components/ui/DecisionDashboard'
+import { CURRENCY_LABEL } from '@/lib/currency'
+import { computeLocationDecision, LocationDecisionResult } from '@/lib/services/locationDecisionService'
 
 const RADIUS_OPTIONS = [
   { label: '500m (Hyperlocal)', value: 500 },
@@ -104,6 +109,11 @@ export const AiIntelligencePage: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisStatus, setAnalysisStatus] = useState<string | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  // Location Decision Engine state
+  const [decisionResult, setDecisionResult] = useState<LocationDecisionResult | null>(null)
+  const [monthlyBurn, setMonthlyBurn] = useState<number | undefined>(undefined)
+  const [monthlyRevenue, setMonthlyRevenue] = useState<number | undefined>(undefined)
 
   // Save to dossier state
   const [isSaving, setIsSaving] = useState(false)
@@ -287,6 +297,22 @@ export const AiIntelligencePage: React.FC = () => {
       setAlternativeCandidates(marketRes.alternativeCandidates)
       setMarketProvenance(marketRes.provenance)
       setDiscoveryMetrics(marketRes.discoveryMetrics || null)
+
+      // ── Compute deterministic location decision immediately ──────────
+      const decision = computeLocationDecision({
+        businessTitle: title.trim() || 'Business Idea',
+        sector: effectiveSector || category,
+        locationName: locationInput.trim(),
+        budget: budget || null,
+        monthlyBurn,
+        monthlyRevenue,
+        radiusMeters: selectedRadiusMeters,
+        competitors: marketRes.competitors,
+        alternativeCandidates: marketRes.alternativeCandidates,
+        discoveryMetrics: marketRes.discoveryMetrics || null,
+        coverageNote: marketRes.coverageNote,
+      })
+      setDecisionResult(decision)
 
       return marketRes
     } catch (err: any) {
@@ -558,12 +584,37 @@ export const AiIntelligencePage: React.FC = () => {
               </div>
 
               <Input
-                label="Declared Capital / Available Budget ($ USD / INR)"
+                label={`Declared Capital / Available Budget (${CURRENCY_LABEL})`}
                 type="number"
-                placeholder="e.g. 50000"
+                placeholder="e.g. 5,00,000"
                 value={budget || ''}
                 onChange={(e) => setBudget(e.target.value ? parseFloat(e.target.value) : undefined)}
                 helperText="Evaluated against equipment, commercial leasing, and operational runway"
+              />
+            </div>
+
+            {/* Financial Feasibility Inputs for Decision Engine */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/60">
+              <div className="md:col-span-2 flex items-center gap-2 text-[11px] text-slate-400 mb-1">
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="font-semibold text-slate-300">Financial Feasibility Inputs</span>
+                <span className="text-slate-500">— used by the Location Decision Engine to score runway</span>
+              </div>
+              <Input
+                label={`Est. Monthly Expenses (${CURRENCY_LABEL})`}
+                type="number"
+                placeholder="e.g. 40,000"
+                value={monthlyBurn || ''}
+                onChange={(e) => setMonthlyBurn(e.target.value ? parseFloat(e.target.value) : undefined)}
+                helperText="Rent, staff, utilities, supplies — your estimate"
+              />
+              <Input
+                label={`Est. Monthly Revenue (${CURRENCY_LABEL})`}
+                type="number"
+                placeholder="e.g. 60,000"
+                value={monthlyRevenue || ''}
+                onChange={(e) => setMonthlyRevenue(e.target.value ? parseFloat(e.target.value) : undefined)}
+                helperText="Your projected first-year monthly revenue"
               />
             </div>
 
@@ -764,6 +815,32 @@ export const AiIntelligencePage: React.FC = () => {
               <Skeleton className="h-4 w-3/4" />
               <Skeleton className="h-4 w-1/2" />
               <Skeleton className="h-20 w-full" />
+            </div>
+          )}
+
+          {/* ── Location Decision Dashboard ──────────────────────────── */}
+          {decisionResult && !isDiscoveringMarket && (
+            <div className="mt-6 pt-6 border-t border-slate-800/80">
+              <div className="flex items-center gap-2 mb-4">
+                <Sparkles className="w-4 h-4 text-indigo-400" />
+                <h2 className="text-sm font-bold uppercase tracking-wider text-white">
+                  Location Decision Engine
+                </h2>
+                <span className="ml-auto text-[10px] text-slate-500">
+                  Evidence-only scoring • no AI hallucination
+                </span>
+              </div>
+              <DecisionDashboard
+                result={decisionResult}
+                locationName={locationInput || territory?.placeName || 'Selected Area'}
+                businessTitle={title || 'Business Idea'}
+                sector={effectiveSector || category}
+                onSelectAlternative={(areaName, coords) => {
+                  setLocationInput(areaName)
+                  if (coords) setSelectedCoordinates(coords)
+                  setDecisionResult(null)
+                }}
+              />
             </div>
           )}
 
@@ -975,11 +1052,17 @@ export const AiIntelligencePage: React.FC = () => {
                               </span>
                             </div>
 
-                            {/* Full Verified Address */}
-                            <p className="text-[11px] text-slate-300 leading-relaxed flex items-start gap-1.5 pt-0.5">
+                            {/* Full Verified Address — clickable Maps link */}
+                            <div className="flex items-start gap-1.5 pt-0.5">
                               <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
-                              <span>{c.address}</span>
-                            </p>
+                              <GoogleMapsLink
+                                mode="address"
+                                coordinates={c.coordinates}
+                                address={c.address}
+                                label={c.name}
+                                className="text-[11px] text-slate-300"
+                              />
+                            </div>
 
                             {/* Contact Details (if returned by genuine source) */}
                             {(c.contactPhone || c.website) && (
@@ -1019,6 +1102,13 @@ export const AiIntelligencePage: React.FC = () => {
                                 {isSelected ? '• Focused on Map' : 'Click to inspect on map →'}
                               </span>
                             </div>
+                            {/* View on Google Maps footer action */}
+                            <GoogleMapsLink
+                              coordinates={c.coordinates}
+                              address={c.address}
+                              label={c.name}
+                              showDisabled
+                            />
                             <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/40 text-[9px] text-slate-500">
                               <span className="truncate max-w-[220px]" title={c.provenance.source}>
                                 Source: <span className="text-slate-400">{c.provenance.source}</span>
@@ -1062,9 +1152,9 @@ export const AiIntelligencePage: React.FC = () => {
                           {alt.distanceKm} km away
                         </Badge>
                       </div>
-                      <div className="text-[11px] text-slate-300 mt-1">
-                        <span className="text-slate-400">Registered competitors: </span>
-                        <span className="font-semibold text-white">{alt.competitorCount}</span>
+                      <div className="flex items-center gap-3 text-[11px] text-slate-300 mt-1">
+                        <span><span className="text-amber-400 font-semibold">{alt.directCompetitorsCount ?? 0}</span> direct</span>
+                        <span><span className="text-blue-400 font-semibold">{alt.indirectCompetitorsCount ?? 0}</span> indirect</span>
                       </div>
                       {alt.sampleCompetitors.length > 0 && (
                         <p className="text-[10px] text-slate-400 mt-1 truncate">
@@ -1073,14 +1163,23 @@ export const AiIntelligencePage: React.FC = () => {
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => handleSelectAlternativeArea(alt)}
-                      className="mt-3 w-full py-1.5 px-2 bg-purple-900/40 hover:bg-purple-800/50 text-purple-200 border border-purple-700/50 rounded-lg text-[10px] font-semibold flex items-center justify-center gap-1 transition-colors"
-                    >
-                      <span>Switch to {alt.areaName}</span>
-                      <ArrowRight className="w-3 h-3" />
-                    </button>
+                    <div className="flex items-center gap-2 mt-3 pt-2 border-t border-purple-900/30">
+                      <GoogleMapsLink
+                        coordinates={alt.coordinates}
+                        address={alt.areaName}
+                        label={alt.areaName}
+                        mode="icon-text"
+                        className="text-[10px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSelectAlternativeArea(alt)}
+                        className="ml-auto py-1 px-2 bg-purple-900/40 hover:bg-purple-800/50 text-purple-200 border border-purple-700/50 rounded-lg text-[10px] font-semibold flex items-center gap-1 transition-colors"
+                      >
+                        <span>Analyse</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

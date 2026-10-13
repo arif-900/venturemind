@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   Briefcase,
   ArrowLeft,
@@ -8,7 +8,9 @@ import {
   TrendingUp,
   ShieldAlert,
   Trash2,
-  DollarSign,
+  Pencil,
+  X,
+  Save,
   Compass,
   Building2,
   Clock,
@@ -19,7 +21,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { businessService } from '@/lib/services/businessService'
-import { BusinessRequestRecord } from '@/lib/validations/business'
+import { BusinessRequestRecord, BusinessRequestInput, businessCategories, BUSINESS_OBJECTIVES, BUSINESS_STATUSES } from '@/lib/validations/business'
 import { geminiService, GeminiAnalysisResult } from '@/lib/services/geminiService'
 import {
   realtimeIntelligenceService,
@@ -33,11 +35,15 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { Badge } from '@/components/ui/Badge'
 import { Alert } from '@/components/ui/Alert'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { formatINR, formatINRSafe, CURRENCY_LABEL } from '@/lib/currency'
+import { GoogleMapsLink } from '@/components/ui/GoogleMapsLink'
+import { buildGoogleMapsUrl } from '@/lib/services/realtimeIntelligenceService'
 
 export const BusinessDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>()
   const { user } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
 
   const [business, setBusiness] = useState<BusinessRequestRecord | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -60,12 +66,22 @@ export const BusinessDetailPage: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
 
-  // Interactive Financial Modeling State
-  const [monthlyBurn, setMonthlyBurn] = useState<number>(5000)
-  const [monthlyRevenue, setMonthlyRevenue] = useState<number>(1500)
+  // Interactive Financial Modeling State — start empty, never inject demo values
+  const [monthlyBurn, setMonthlyBurn] = useState<number | undefined>(undefined)
+  const [monthlyRevenue, setMonthlyRevenue] = useState<number | undefined>(undefined)
 
   // Delete state
   const [isDeleting, setIsDeleting] = useState(false)
+
+  // Edit state
+  const [isEditOpen, setIsEditOpen] = useState(false)
+  const [editForm, setEditForm] = useState<Partial<BusinessRequestInput>>({})
+  const [isSaving, setIsSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editSuccess, setEditSuccess] = useState(false)
+
+  // Quick status change
+  const [isChangingStatus, setIsChangingStatus] = useState(false)
 
   const loadBusiness = useCallback(async () => {
     if (!id || !user) return
@@ -83,6 +99,21 @@ export const BusinessDetailPage: React.FC = () => {
       setErrorMsg(res.error)
     } else {
       setBusiness(res.data)
+      // Auto-open edit modal if navigated with openEdit flag
+      if ((location.state as any)?.openEdit && res.data) {
+        setEditForm({
+          title: res.data.title,
+          business_category: res.data.business_category,
+          description: res.data.description || '',
+          budget: res.data.budget ?? undefined,
+          target_location: res.data.target_location || '',
+          objective: res.data.objective,
+          status: res.data.status,
+        })
+        setIsEditOpen(true)
+        // Clear location state so refreshing doesn't re-open
+        navigate(location.pathname, { replace: true, state: {} })
+      }
     }
 
     setIsLoading(false)
@@ -184,6 +215,54 @@ export const BusinessDetailPage: React.FC = () => {
     }
   }
 
+  const handleOpenEdit = () => {
+    if (!business) return
+    setEditForm({
+      title: business.title,
+      business_category: business.business_category,
+      description: business.description || '',
+      budget: business.budget ?? undefined,
+      target_location: business.target_location || '',
+      objective: business.objective,
+      status: business.status,
+    })
+    setEditError(null)
+    setEditSuccess(false)
+    setIsEditOpen(true)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!business || !user) return
+    if (!editForm.title?.trim()) {
+      setEditError('Business title is required.')
+      return
+    }
+    setIsSaving(true)
+    setEditError(null)
+    const res = await businessService.updateBusiness(business.id, editForm, user.id)
+    setIsSaving(false)
+    if (res.data) {
+      setBusiness(res.data)
+      setEditSuccess(true)
+      setTimeout(() => {
+        setIsEditOpen(false)
+        setEditSuccess(false)
+      }, 900)
+    } else {
+      setEditError(res.error || 'Failed to save changes.')
+    }
+  }
+
+  const handleStatusChange = async (newStatus: typeof BUSINESS_STATUSES[number]) => {
+    if (!business || !user || newStatus === business.status) return
+    setIsChangingStatus(true)
+    const res = await businessService.updateBusiness(business.id, { status: newStatus }, user.id)
+    setIsChangingStatus(false)
+    if (res.data) {
+      setBusiness(res.data)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="max-w-5xl mx-auto space-y-6">
@@ -228,10 +307,19 @@ export const BusinessDetailPage: React.FC = () => {
     )
   }
 
-  // Financial deterministic runway math
-  const declaredCapital = business.budget ?? 0
-  const netBurn = monthlyBurn - monthlyRevenue
-  const runwayMonths = netBurn > 0 ? (declaredCapital / netBurn).toFixed(1) : 'Infinite (Profitable)'
+  // Financial deterministic runway math — only compute when all inputs are present
+  const declaredCapital = business.budget ?? null
+  const hasBurn = monthlyBurn !== undefined && !isNaN(monthlyBurn)
+  const hasRevenue = monthlyRevenue !== undefined && !isNaN(monthlyRevenue)
+  const netBurn = hasBurn && hasRevenue ? monthlyBurn! - monthlyRevenue! : null
+  const runwayMonths =
+    netBurn === null
+      ? null
+      : netBurn <= 0
+      ? 'Infinite (Profitable)'
+      : declaredCapital !== null
+      ? (declaredCapital / netBurn).toFixed(1)
+      : null
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -246,7 +334,30 @@ export const BusinessDetailPage: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-bold text-white tracking-tight">{business.title}</h1>
-              <Badge variant={business.status}>{business.status}</Badge>
+              {/* Quick status changer */}
+              <div className="relative flex items-center">
+                {isChangingStatus && (
+                  <span className="absolute -left-5 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-indigo-400/40 border-t-indigo-400 rounded-full animate-spin" />
+                )}
+                <select
+                  value={business.status}
+                  disabled={isChangingStatus}
+                  onChange={(e) => handleStatusChange(e.target.value as typeof BUSINESS_STATUSES[number])}
+                  className={`appearance-none cursor-pointer text-[11px] font-bold uppercase tracking-wider rounded-full px-3 py-0.5 border transition-colors focus:outline-none disabled:opacity-60
+                    ${ business.status === 'draft'      ? 'bg-slate-800 text-slate-300 border-slate-600'
+                      : business.status === 'submitted'  ? 'bg-blue-950 text-blue-300 border-blue-700'
+                      : business.status === 'in_review'  ? 'bg-amber-950 text-amber-300 border-amber-700'
+                      : business.status === 'analyzed'   ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+                      : 'bg-red-950 text-red-300 border-red-800'
+                    }`}
+                >
+                  {BUSINESS_STATUSES.map((s) => (
+                    <option key={s} value={s}>
+                      {s.replace(/_/g, ' ')}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <p className="text-xs text-indigo-400 font-medium mt-0.5">
               {business.business_category} • Objective: <span className="capitalize">{business.objective.replace('_', ' ')}</span>
@@ -255,6 +366,14 @@ export const BusinessDetailPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleOpenEdit}
+            icon={<Pencil className="w-3.5 h-3.5" />}
+          >
+            Edit
+          </Button>
           <Button
             variant="danger"
             size="sm"
@@ -334,18 +453,27 @@ export const BusinessDetailPage: React.FC = () => {
                   <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
                     Target Location
                   </h4>
-                  <p className="text-xs text-slate-200 flex items-center gap-1.5">
+                  <div className="text-xs text-slate-200 flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5 text-blue-400" />
-                    {business.target_location || 'Not specified'}
-                  </p>
+                    {business.target_location ? (
+                      <GoogleMapsLink
+                        mode="address"
+                        address={business.target_location}
+                        label={business.title}
+                        className="text-slate-200"
+                      />
+                    ) : (
+                      <span>Not specified</span>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
                     Capital Allocation
                   </h4>
                   <p className="text-xs text-slate-200 flex items-center gap-1.5">
-                    <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
-                    {business.budget ? `$${business.budget.toLocaleString()}` : 'Unspecified'}
+                    <span className="text-emerald-400 font-bold text-sm">₹</span>
+                    {formatINRSafe(business.budget, 'Unspecified')}
                   </p>
                 </div>
               </div>
@@ -449,7 +577,18 @@ export const BusinessDetailPage: React.FC = () => {
                         <span className="font-semibold text-sm text-white">{territory.placeName}</span>
                       </div>
                       <div className="text-xs text-slate-400 flex flex-wrap gap-x-4">
-                        <span>Coordinates: <span className="text-slate-200 font-mono">[{territory.coordinates[0].toFixed(4)}, {territory.coordinates[1].toFixed(4)}]</span></span>
+                        <span>
+                          Coordinates:{' '}
+                          <a
+                            href={buildGoogleMapsUrl({ coordinates: territory.coordinates }) || '#'}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 hover:underline font-mono transition-colors"
+                            title="View territory center on Google Maps"
+                          >
+                            [{territory.coordinates[0].toFixed(4)}, {territory.coordinates[1].toFixed(4)}]
+                          </a>
+                        </span>
                         {territory.context.region && <span>Region: <span className="text-slate-200">{territory.context.region}</span></span>}
                         {territory.context.postcode && <span>Postcode: <span className="text-slate-200">{territory.context.postcode}</span></span>}
                       </div>
@@ -490,13 +629,30 @@ export const BusinessDetailPage: React.FC = () => {
                               <span className="font-semibold text-white">{c.name}</span>
                               <Badge variant="neutral" className="capitalize text-[10px]">{c.type}</Badge>
                             </div>
-                            <p className="text-[11px] text-slate-400 leading-relaxed mb-2">{c.address}</p>
+                            {/* Address — clickable opens Google Maps */}
+                            <div className="flex items-start gap-1.5 mb-2">
+                              <MapPin className="w-3 h-3 text-slate-500 shrink-0 mt-0.5" />
+                              <GoogleMapsLink
+                                mode="address"
+                                coordinates={c.coordinates}
+                                address={c.address}
+                                label={c.name}
+                                className="text-[11px] text-slate-300"
+                              />
+                            </div>
                           </div>
                           <div className="space-y-1 pt-2 border-t border-slate-800/80">
                             <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
                               <span>Coords: [{c.coordinates[0].toFixed(4)}, {c.coordinates[1].toFixed(4)}]</span>
                               <span>{c.distanceKm !== undefined ? `${c.distanceKm.toFixed(2)} km away` : 'Within radius'}</span>
                             </div>
+                            {/* View on Google Maps footer action */}
+                            <GoogleMapsLink
+                              coordinates={c.coordinates}
+                              address={c.address}
+                              label={c.name}
+                              showDisabled
+                            />
                             <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/40">
                               <span className="truncate max-w-[200px]" title={c.provenance.source}>
                                 Source: <span className="text-slate-400">{c.provenance.source}</span>
@@ -664,8 +820,16 @@ export const BusinessDetailPage: React.FC = () => {
                 Runway Forecast
               </span>
               <div className="mt-2">
-                <span className="text-3xl font-bold text-emerald-400">{runwayMonths}</span>
-                <span className="text-xs text-slate-400 ml-1.5">{typeof runwayMonths === 'string' && runwayMonths.includes('Infinite') ? '' : 'Months'}</span>
+                {runwayMonths !== null ? (
+                  <>
+                    <span className="text-3xl font-bold text-emerald-400">{runwayMonths}</span>
+                    <span className="text-xs text-slate-400 ml-1.5">
+                      {typeof runwayMonths === 'string' && runwayMonths.includes('Infinite') ? '' : 'Months'}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-sm text-slate-500 italic">Enter burn &amp; revenue below</span>
+                )}
               </div>
               <p className="text-[11px] text-slate-500 mt-1">Capital ÷ Net Monthly Burn</p>
             </Card>
@@ -675,9 +839,13 @@ export const BusinessDetailPage: React.FC = () => {
                 Net Monthly Burn
               </span>
               <div className="mt-2">
-                <span className="text-3xl font-bold text-rose-400">
-                  ${Math.max(0, netBurn).toLocaleString()}
-                </span>
+                {netBurn !== null ? (
+                  <span className="text-3xl font-bold text-rose-400">
+                    {formatINR(Math.max(0, netBurn))}
+                  </span>
+                ) : (
+                  <span className="text-sm text-slate-500 italic">—</span>
+                )}
               </div>
               <p className="text-[11px] text-slate-500 mt-1">Expenses minus expected revenues</p>
             </Card>
@@ -688,7 +856,7 @@ export const BusinessDetailPage: React.FC = () => {
               </span>
               <div className="mt-2">
                 <span className="text-2xl font-bold text-white">
-                  ${declaredCapital.toLocaleString()}
+                  {formatINRSafe(declaredCapital, 'Not set')}
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 mt-1">From business request record</p>
@@ -711,33 +879,222 @@ export const BusinessDetailPage: React.FC = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Input
-                  label="Monthly Fixed Costs / Expenses ($)"
-                  type="number"
-                  value={monthlyBurn}
-                  onChange={(e) => setMonthlyBurn(parseFloat(e.target.value) || 0)}
-                  helperText="Rent, software, salaries, utilities"
-                />
-                <Input
-                  label="Expected Monthly Revenue ($)"
-                  type="number"
-                  value={monthlyRevenue}
-                  onChange={(e) => setMonthlyRevenue(parseFloat(e.target.value) || 0)}
-                  helperText="Initial projected monthly cash inflow"
-                />
+                <div className="space-y-1.5 text-left">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300">
+                    Monthly Fixed Costs / Expenses ({CURRENCY_LABEL})
+                  </label>
+                  <input
+                    id="detail-monthly-burn"
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="e.g. 50,000"
+                    value={monthlyBurn !== undefined ? monthlyBurn : ''}
+                    onChange={(e) => setMonthlyBurn(e.target.value === '' ? undefined : parseFloat(e.target.value))}
+                    className="w-full rounded-lg bg-slate-900/80 border border-slate-800 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <p className="text-[11px] text-slate-500">Rent, software, salaries, utilities</p>
+                </div>
+                <div className="space-y-1.5 text-left">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300">
+                    Expected Monthly Revenue ({CURRENCY_LABEL})
+                  </label>
+                  <input
+                    id="detail-monthly-revenue"
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="e.g. 1,50,000"
+                    value={monthlyRevenue !== undefined ? monthlyRevenue : ''}
+                    onChange={(e) => setMonthlyRevenue(e.target.value === '' ? undefined : parseFloat(e.target.value))}
+                    className="w-full rounded-lg bg-slate-900/80 border border-slate-800 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <p className="text-[11px] text-slate-500">Initial projected monthly cash inflow</p>
+                </div>
               </div>
 
               <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-400 space-y-1">
                 <p className="font-semibold text-white">Deterministic Mathematical Provenance:</p>
                 <p>
-                  Formula: <code className="text-indigo-300 font-mono">Runway = Declared Capital ÷ (Monthly Expenses - Monthly Revenue)</code>
+                  Formula: <code className="text-indigo-300 font-mono">Runway = Declared Capital ÷ (Monthly Expenses − Monthly Revenue)</code>
                 </p>
                 <p className="text-[11px] text-slate-500 pt-1">
-                  Note: Declared capital (${declaredCapital.toLocaleString()}) reflects your validated project record. Variable cost assumptions represent projection parameters, not historical audited records.
+                  Note: Declared capital ({formatINRSafe(declaredCapital, 'not set')}) is your saved project budget in ₹ INR.
+                  Variable cost assumptions represent projection parameters, not historical audited records.
                 </p>
               </div>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* ──────────── Edit Business Modal ──────────── */}
+      {isEditOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={() => setIsEditOpen(false)}
+          />
+
+          {/* Panel */}
+          <div className="relative w-full max-w-lg bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-indigo-400" />
+                <h2 className="text-sm font-bold text-white">Edit Business Idea</h2>
+              </div>
+              <button
+                onClick={() => setIsEditOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
+              {/* Title */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  Business Title <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  maxLength={120}
+                  value={editForm.title ?? ''}
+                  onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))}
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors"
+                  placeholder="e.g. Chai Tapri Franchise"
+                />
+              </div>
+
+              {/* Category */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  Business Category
+                </label>
+                <select
+                  value={editForm.business_category ?? ''}
+                  onChange={(e) => setEditForm((f) => ({ ...f, business_category: e.target.value }))}
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors"
+                >
+                  {businessCategories.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Objective */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  Objective
+                </label>
+                <select
+                  value={editForm.objective ?? ''}
+                  onChange={(e) => setEditForm((f) => ({ ...f, objective: e.target.value as typeof BUSINESS_OBJECTIVES[number] }))}
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors"
+                >
+                  {BUSINESS_OBJECTIVES.map((obj) => (
+                    <option key={obj} value={obj}>{obj.replace(/_/g, ' ')}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Budget */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  Starting Capital (₹ INR)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={editForm.budget !== undefined && editForm.budget !== null ? editForm.budget : ''}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      budget: e.target.value === '' ? undefined : parseFloat(e.target.value),
+                    }))
+                  }
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors"
+                  placeholder="e.g. 5,00,000"
+                />
+              </div>
+
+              {/* Target Location */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  Target Location
+                </label>
+                <input
+                  type="text"
+                  maxLength={150}
+                  value={editForm.target_location ?? ''}
+                  onChange={(e) => setEditForm((f) => ({ ...f, target_location: e.target.value }))}
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors"
+                  placeholder="e.g. Pune, Maharashtra"
+                />
+              </div>
+
+              {/* Description */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  Description
+                </label>
+                <textarea
+                  maxLength={1000}
+                  rows={4}
+                  value={editForm.description ?? ''}
+                  onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors resize-none"
+                  placeholder="Describe your business concept..."
+                />
+              </div>
+
+              {/* Error / Success */}
+              {editError && (
+                <div className="flex items-center gap-2 rounded-lg bg-red-950/50 border border-red-800/60 px-3.5 py-2.5 text-xs text-red-300">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  {editError}
+                </div>
+              )}
+              {editSuccess && (
+                <div className="flex items-center gap-2 rounded-lg bg-emerald-950/50 border border-emerald-800/60 px-3.5 py-2.5 text-xs text-emerald-300">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  Changes saved successfully!
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-800 bg-slate-950/80">
+              <button
+                onClick={() => setIsEditOpen(false)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={isSaving || editSuccess}
+                className="flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                {isSaving ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Saving…
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    Save Changes
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

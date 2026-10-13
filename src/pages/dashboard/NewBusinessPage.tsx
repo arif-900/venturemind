@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/Button'
 import { Input, Textarea } from '@/components/ui/Input'
 import { Alert } from '@/components/ui/Alert'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
+import { CURRENCY_LABEL } from '@/lib/currency'
 
 export const NewBusinessPage: React.FC = () => {
   const { user } = useAuth()
@@ -243,17 +244,17 @@ export const NewBusinessPage: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Input
-                label="Allocated Budget ($ USD)"
+                label={`Allocated Capital (${CURRENCY_LABEL})`}
                 id="budget"
                 name="budget"
                 type="number"
                 min="0"
-                step="500"
-                placeholder="50000"
+                step="1000"
+                placeholder="e.g. 5,00,000"
                 value={formData.budget === null || formData.budget === undefined ? '' : formData.budget}
                 onChange={handleChange}
                 error={formErrors.budget}
-                helperText="Estimated starting capital or investment threshold"
+                helperText="Starting capital or investment budget in Indian Rupees (₹)"
               />
 
               <Input

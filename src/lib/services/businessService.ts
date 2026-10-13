@@ -143,6 +143,49 @@ export const businessService = {
   },
 
   /**
+   * Update an existing business request with strict ownership check and Zod validation
+   */
+  async updateBusiness(
+    id: string,
+    input: Partial<BusinessRequestInput>,
+    userId: string
+  ): Promise<{ data: BusinessRequestRecord | null; error?: string }> {
+    if (!userId) return { data: null, error: 'Authentication required' }
+
+    const { isConfigured } = getAppEnv()
+    if (!isConfigured) {
+      return { data: null, error: 'Database service is not configured.' }
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('business_requests')
+        .update({
+          ...(input.title !== undefined && { title: input.title }),
+          ...(input.business_category !== undefined && { business_category: input.business_category }),
+          ...(input.description !== undefined && { description: input.description || null }),
+          ...(input.budget !== undefined && { budget: input.budget ?? null }),
+          ...(input.target_location !== undefined && { target_location: input.target_location || null }),
+          ...(input.objective !== undefined && { objective: input.objective }),
+          ...(input.status !== undefined && { status: input.status }),
+        })
+        .eq('id', id)
+        .eq('user_id', userId)
+        .select()
+        .single()
+
+      if (error) {
+        console.error('Supabase updateBusiness error:', error)
+        return { data: null, error: 'Failed to update business venture.' }
+      }
+
+      return { data: data as BusinessRequestRecord }
+    } catch (err: any) {
+      return { data: null, error: err.message || 'Failed to update business request' }
+    }
+  },
+
+  /**
    * Delete a business request with strict ownership check
    */
   async deleteBusiness(

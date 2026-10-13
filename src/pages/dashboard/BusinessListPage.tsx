@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Link } from 'react-router-dom'
-import { Briefcase, PlusCircle, ArrowRight, Search, Filter } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Briefcase, PlusCircle, ArrowRight, Search, Filter, Trash2, Pencil } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { businessService } from '@/lib/services/businessService'
 import { BusinessRequestRecord } from '@/lib/validations/business'
@@ -8,13 +8,17 @@ import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { formatINRSafe } from '@/lib/currency'
+import { GoogleMapsLink } from '@/components/ui/GoogleMapsLink'
 
 export const BusinessListPage: React.FC = () => {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [businesses, setBusinesses] = useState<BusinessRequestRecord[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [isLoading, setIsLoading] = useState(true)
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
 
   const loadData = useCallback(async () => {
     if (!user) return
@@ -38,6 +42,19 @@ export const BusinessListPage: React.FC = () => {
     const matchesStatus = statusFilter === 'all' || b.status === statusFilter
     return matchesSearch && matchesStatus
   })
+
+  const handleDelete = async (biz: BusinessRequestRecord) => {
+    if (!user) return
+    if (!window.confirm(`Delete "${biz.title}"? This action cannot be undone.`)) return
+    setDeletingIds((prev) => new Set(prev).add(biz.id))
+    const res = await businessService.deleteBusiness(biz.id, user.id)
+    if (res.success) {
+      setBusinesses((prev) => prev.filter((b) => b.id !== biz.id))
+    } else {
+      alert(res.error || 'Failed to delete business')
+    }
+    setDeletingIds((prev) => { const s = new Set(prev); s.delete(biz.id); return s })
+  }
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -111,15 +128,46 @@ export const BusinessListPage: React.FC = () => {
                 <p className="text-xs text-indigo-400">{biz.business_category}</p>
                 <div className="flex items-center gap-4 text-[11px] text-slate-400 pt-1">
                   <span>Objective: <strong className="text-slate-300 capitalize">{biz.objective.replace('_', ' ')}</strong></span>
-                  {biz.budget && <span>Budget: <strong className="text-slate-300">${biz.budget.toLocaleString()}</strong></span>}
-                  {biz.target_location && <span>Location: <strong className="text-slate-300">{biz.target_location}</strong></span>}
+                  {biz.budget !== null && biz.budget !== undefined && <span>Capital: <strong className="text-slate-300">{formatINRSafe(biz.budget)}</strong></span>}
+                  {biz.target_location && (
+                    <span className="flex items-center gap-1">
+                      Location:
+                      <GoogleMapsLink
+                        mode="address"
+                        address={biz.target_location}
+                        label={biz.title}
+                        className="font-semibold text-slate-300 text-[11px]"
+                      />
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <div className="shrink-0">
+              <div className="shrink-0 flex items-center gap-2">
+                <button
+                  onClick={() => navigate(`/dashboard/business/${biz.id}`, { state: { openEdit: true } })}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition-colors"
+                  title="Edit business"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  Edit
+                </button>
+                <button
+                  onClick={() => handleDelete(biz)}
+                  disabled={deletingIds.has(biz.id)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-950/30 border border-red-900/40 hover:border-red-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="Delete business"
+                >
+                  {deletingIds.has(biz.id) ? (
+                    <span className="w-3.5 h-3.5 border-2 border-red-400/30 border-t-red-400 rounded-full animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  Delete
+                </button>
                 <Link to={`/dashboard/business/${biz.id}`}>
                   <Button variant="secondary" size="sm" icon={<ArrowRight className="w-3.5 h-3.5" />}>
-                    Open Workspace
+                    Open
                   </Button>
                 </Link>
               </div>

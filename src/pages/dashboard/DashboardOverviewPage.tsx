@@ -19,6 +19,8 @@ import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Alert } from '@/components/ui/Alert'
+import { formatINRSafe } from '@/lib/currency'
+import { GoogleMapsLink } from '@/components/ui/GoogleMapsLink'
 
 export const DashboardOverviewPage: React.FC = () => {
   const { user, profile } = useAuth()
@@ -217,16 +219,19 @@ export const DashboardOverviewPage: React.FC = () => {
                       <div className="flex items-center justify-between">
                         <span className="text-slate-500">Budget:</span>
                         <span className="text-slate-300 font-medium">
-                          ${biz.budget.toLocaleString()}
+                          {formatINRSafe(biz.budget)}
                         </span>
                       </div>
                     )}
                     {biz.target_location && (
                       <div className="flex items-center justify-between">
                         <span className="text-slate-500">Location:</span>
-                        <span className="text-slate-300 font-medium truncate max-w-[150px]">
-                          {biz.target_location}
-                        </span>
+                        <GoogleMapsLink
+                          mode="address"
+                          address={biz.target_location}
+                          label={biz.title}
+                          className="text-slate-300 font-medium text-[11px] truncate max-w-[150px]"
+                        />
                       </div>
                     )}
                   </div>

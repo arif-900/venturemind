@@ -9,6 +9,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { Badge } from '@/components/ui/Badge'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Alert } from '@/components/ui/Alert'
+import { GoogleMapsLink } from '@/components/ui/GoogleMapsLink'
+import { buildGoogleMapsUrl } from '@/lib/services/realtimeIntelligenceService'
 
 export const ReportsPage: React.FC = () => {
   const { user } = useAuth()
@@ -112,9 +114,15 @@ export const ReportsPage: React.FC = () => {
                   </div>
 
                   {report.evidence_payload?.territory && (
-                    <div className="flex items-center gap-2 text-slate-400 text-[11px] pt-1">
+                    <div className="flex items-center gap-2 text-slate-400 text-[11px] pt-1 flex-wrap">
                       <MapPin className="w-3.5 h-3.5 text-blue-400" />
-                      <span>{report.evidence_payload.territory.placeName}</span>
+                      <GoogleMapsLink
+                        mode="address"
+                        coordinates={report.evidence_payload.territory.coordinates}
+                        address={report.evidence_payload.territory.placeName}
+                        label={report.evidence_payload.territory.placeName}
+                        className="text-slate-300"
+                      />
                       {(report.evidence_payload.competitorCount !== undefined ||
                         report.evidence_payload.competitorsCount !== undefined) && (
                         <span className="text-slate-500">

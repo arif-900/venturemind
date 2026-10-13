@@ -98,7 +98,7 @@ Evaluate this venture:
 - Business Initiative: "${businessTitle}"
 - Category: "${category}"
 - Stated Objective: "${objective}"
-- Declared Capital / Budget: ${budget ? '$' + budget : 'Unspecified'}
+- Declared Capital / Budget: ${budget ? '₹' + Number(budget).toLocaleString('en-IN') : 'Unspecified'}
 - Target Customer Profile / Demographic: "${targetDemographic || 'Unspecified by founder'}"
 - Primary Target Location: "${targetLocation || 'Not specified'}"
 
@@ -141,21 +141,44 @@ Respond ONLY with valid JSON having the following structure:
 }`
 
               const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${geminiApiKey}`
-              const geminiRes = await fetch(geminiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  contents: [{ parts: [{ text: prompt }] }],
-                  generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
-                }),
+              const geminiPayload = JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
               })
 
-              if (!geminiRes.ok) {
-                const errText = await geminiRes.text()
-                console.error('Gemini API upstream error in dev middleware:', errText)
+              // Retry up to 3 times with backoff — handles 503 high-demand spikes
+              let geminiRes: Response | null = null
+              let lastErrText = ''
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                geminiRes = await fetch(geminiUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: geminiPayload,
+                })
+                if (geminiRes.ok) break
+                lastErrText = await geminiRes.text()
+                const status = geminiRes.status
+                // Only retry on 503 (high demand) or 429 (rate limit)
+                if (status !== 503 && status !== 429) break
+                if (attempt < 3) {
+                  const waitMs = attempt * 2000 // 2s, 4s
+                  console.warn(`[VentureMind AI] Gemini ${status} on attempt ${attempt}, retrying in ${waitMs}ms…`)
+                  await new Promise((r) => setTimeout(r, waitMs))
+                }
+              }
+
+              if (!geminiRes || !geminiRes.ok) {
+                const status = geminiRes?.status ?? 0
+                const errMsg =
+                  status === 503 ? 'Gemini is experiencing high demand right now. Please try again in a moment.' :
+                  status === 429 ? 'Gemini rate limit reached. Wait a minute then retry.' :
+                  status === 401 || status === 403 ? 'Invalid or expired GEMINI_API_KEY — update it in your .env file.' :
+                  status === 404 ? 'Gemini model not found — check the model name in vite.config.ts.' :
+                  `Gemini API returned ${status}. Check terminal logs for details.`
+                console.error(`[VentureMind AI] Gemini API error ${status}:`, lastErrText.slice(0, 400))
                 res.statusCode = 502
                 res.setHeader('Content-Type', 'application/json')
-                res.end(JSON.stringify({ error: 'Upstream Gemini model error or rate limit reached.', details: errText }))
+                res.end(JSON.stringify({ error: errMsg, details: lastErrText.slice(0, 400) }))
                 return
               }
 
